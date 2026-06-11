@@ -1,13 +1,13 @@
 name: Build Mac App
 
 on:
-  workflow_dispatch:        # lets you run it manually from the Actions tab
+  workflow_dispatch:
   push:
     branches: [ main ]
 
 jobs:
   build:
-    runs-on: macos-latest   # a real Mac in the cloud
+    runs-on: macos-latest      # Apple Silicon (M1/M2/M3...) runner
 
     steps:
       - name: Check out your code
@@ -27,9 +27,18 @@ jobs:
       - name: Build the Mac app
         run: |
           pyinstaller --onefile --windowed \
+            --target-arch arm64 \
             --hidden-import=selenium \
             --hidden-import=webdriver_manager \
             open_mail.py
+
+      - name: Verify the build
+        run: |
+          APP=dist/open_mail.app/Contents/MacOS/open_mail
+          echo "==================== BUILD CHECK ===================="
+          echo "--- Architecture (should say arm64) ---"
+          lipo -archs "$APP" || true
+          echo "===================================================="
 
       - name: Upload the result
         uses: actions/upload-artifact@v4
