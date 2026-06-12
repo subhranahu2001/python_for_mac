@@ -62,7 +62,7 @@ def _build():
         'profile.default_content_setting_values.notifications': 2,
         'signin.allowed': False, 'signin.allowed_on_next_startup': False,
     })
-    o.page_load_strategy = 'eager'  # don't wait for all subresources
+    o.page_load_strategy = 'normal'  # wait for full page load (eager breaks Gmail button handlers)
     log = os.path.join(os.path.expanduser('~'), 'mail_opener_profiles', f'cdm_{os.getpid()}.log')
     svc = Service(_cdm(), log_output=log)
     d = webdriver.Chrome(service=svc, options=o)
@@ -184,6 +184,7 @@ def _wait_any(d, selectors, timeout=T_ELEMENT_WAIT):
 def _next(d):
     _click_any(d, [
         (By.ID, 'identifierNext'),
+        (By.XPATH, "//button//span[text()='Next']"),
         (By.ID, 'passwordNext'),
         (By.XPATH, '//button[contains(.,"Next")]'),
         (By.XPATH, '//*[@id="idSIButton9"]'),
@@ -214,14 +215,19 @@ def _gmail_email_step(d, email):
     if not f: return False
     try:
         el = d.find_element(*f)
-        el.click(); _fill(d, el, email)
-        if len((el.get_attribute('value') or '')) < max(1, len(email)//2):
-            el.clear(); el.send_keys(email)
-    except: return False
-    _click_any(d, [
-        (By.ID, 'identifierNext'),
-        (By.XPATH, '//button[contains(.,"Next")]'),
-    ], timeout=2)
+        el.click()
+        el.clear()
+        el.send_keys(email)
+    except:
+        try:
+            el = d.find_element(*f)
+            _fill(d, el, email)
+        except: return False
+    time.sleep(1)
+    try:
+        next_btn = d.find_element(By.XPATH, "//button//span[text()='Next']")
+        next_btn.click()
+    except: pass
     # Wait for transition (email field disappears OR password appears OR challenge)
     end = time.time() + 8
     while time.time() < end:
@@ -249,10 +255,18 @@ def _gmail_password_step(d, pw):
         if len((el.get_attribute('value') or '')) < max(1, len(pw)//2):
             el.clear(); el.send_keys(pw)
     except: pass
-    _click_any(d, [
-        (By.ID, 'passwordNext'),
-        (By.XPATH, '//button[contains(.,"Next")]'),
-    ], timeout=2)
+    time.sleep(1)
+    # Click Next button (proven approach from working code)
+    try:
+        next_btn = d.find_element(By.XPATH, "//button//span[text()='Next']")
+        next_btn.click()
+    except:
+        try:
+            next_btn = WebDriverWait(d, 5).until(
+                EC.element_to_be_clickable((By.XPATH, "//button//span[text()='Next']"))
+            )
+            next_btn.click()
+        except: pass
     # Wait for inbox or challenge/error
     end = time.time() + 12
     while time.time() < end:
@@ -303,6 +317,7 @@ def open_gmail(email, pw):
     matched = _wait_any(d, [
         (By.CSS_SELECTOR, 'input[type="email"]'),
         (By.CSS_SELECTOR, 'input[type="password"]'),
+        (By.XPATH, "//button//span[text()='Next']"),
         (By.XPATH, '//*[contains(text(),"Choose an account")]'),
         (By.XPATH, '//*[contains(text(),"mail.google.com")]'),
     ], timeout=10)
@@ -336,21 +351,43 @@ def open_gmail(email, pw):
 
         _check_timeout()
 
-        # Email step (if email field is visible)
-        try:
-            ef = d.find_element(By.CSS_SELECTOR, 'input[type="email"]')
-            if ef.is_displayed():
-                if not _gmail_email_step(d, email):
-                    vtext = _visible_text(d, 3000)
-                    if "couldn't find" in vtext.lower() or "Couldn't find" in vtext:
-                        raise RuntimeError("Gmail: Couldn't find account")
-                    raise RuntimeError('Gmail: Email entry failed')
-        except RuntimeError: raise
-        except: pass
+        # Email step: click Next directly (email is pre-filled via URL)
+        if not _gmail_inbox(d):
+            try:
+                pf_check = d.find_elements(By.CSS_SELECTOR, 'input[type="password"]')
+                if not pf_check or not pf_check[0].is_displayed():
+                    next_btn = d.find_element(By.XPATH, "//button//span[text()='Next']")
+                    next_btn.click()
+            except:
+                # Fallback: full email step
+                try:
+                    ef = d.find_element(By.CSS_SELECTOR, 'input[type="email"]')
+                    if ef.is_displayed():
+                        if not _gmail_email_step(d, email):
+                            vtext = _visible_text(d, 3000)
+                            if "couldn't find" in vtext.lower() or "Couldn't find" in vtext:
+                                raise RuntimeError("Gmail: Couldn't find account")
+                except RuntimeError: raise
+                except: pass
 
         _check_timeout()
 
         # Password step (if password field is visible)
+        if not _gmail_inbox(d):
+            # Wait for password field to appear after email Next click
+            _wait_any(d, [(By.CSS_SELECTOR, 'input[type="password"]')], timeout=8)
+            # Quick attempt: type password and click Next directly
+            try:
+                pf_quick = d.find_element(By.CSS_SELECTOR, 'input[type="password"]')
+                if pf_quick.is_displayed():
+                    pf_quick.click()
+                    pf_quick.clear()
+                    pf_quick.send_keys(pw)
+                    next_btn = d.find_element(By.XPATH, "//button//span[text()='Next']")
+                    next_btn.click()
+            except: pass
+            # Wait for inbox
+            time.sleep(1)
         if not _gmail_inbox(d):
             try:
                 pf = d.find_element(By.CSS_SELECTOR, 'input[type="password"]')
